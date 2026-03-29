@@ -43,35 +43,35 @@ def main():
     project_root = Path(__file__).resolve().parent.parent
     csv_path = project_root / "output" / "landmarks.csv"
     named_csv_path = project_root / "output" / "landmarks_named.csv"
-    json_path = project_root / "output" / "landmarks_by_frame.json"
+    json_path = project_root / "output" / "landmarks_by_image.json"
 
     df = pd.read_csv(csv_path)
     df["landmark_name"] = df["landmark_index"].map(LANDMARK_NAMES)
 
-    # 이름 붙인 CSV 저장
     df.to_csv(named_csv_path, index=False, encoding="utf-8-sig")
 
-    # 프레임별 JSON 변환
-    frames = []
-    grouped = df.groupby("frame_index")
+    images = []
+    grouped = df.groupby(["image_index", "image_name"], sort=True)
 
-    for frame_index, group in grouped:
+    for (image_index, image_name), group in grouped:
         joints = {}
         for _, row in group.iterrows():
-            joint_name = row["landmark_name"]
-            joints[joint_name] = {
+            joints[row["landmark_name"]] = {
                 "x": float(row["world_x"]),
                 "y": float(row["world_y"]),
                 "z": float(row["world_z"]),
                 "visibility": float(row["visibility"]),
             }
 
-        frames.append({
-            "frame_index": int(frame_index),
-            "joints": joints
-        })
+        images.append(
+            {
+                "image_index": int(image_index),
+                "image_name": str(image_name),
+                "joints": joints,
+            }
+        )
 
-    result = {"frames": frames}
+    result = {"images": images}
 
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=2)

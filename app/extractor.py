@@ -1,29 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
-from typing import List
-
+from typing import Iterable
+    
 import cv2
-import imageio.v2 as imageio
 import mediapipe as mp
 import numpy as np
 import pandas as pd
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
-
-
-@dataclass
-class FramePoseRow:
-    frame_index: int
-    landmark_index: int
-    x: float
-    y: float
-    z: float
-    visibility: float
-    world_x: float
-    world_y: float
-    world_z: float
 
 
 class PoseExtractor:
@@ -44,56 +29,56 @@ class PoseExtractor:
         )
         return vision.PoseLandmarker.create_from_options(options)
 
-    def load_gif_frames(self, gif_path: str) -> List[np.ndarray]:
-        frames = imageio.mimread(gif_path)
-        rgb_frames: List[np.ndarray] = []
+    def load_image(self, image_path: str) -> np.ndarray:
+        bgr = cv2.imread(image_path)
+        if bgr is None:
+            raise ValueError(f"이미지를 읽을 수 없습니다: {image_path}")
+        return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
-        for frame in frames:
-            arr = np.asarray(frame)
-            if arr.ndim == 2:
-                arr = np.stack([arr, arr, arr], axis=-1)
-            if arr.shape[-1] == 4:
-                arr = arr[:, :, :3]
-            rgb_frames.append(arr.astype(np.uint8))
-
-        return rgb_frames
-
-    def detect_on_frame(self, rgb_frame: np.ndarray):
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+    def detect_on_image(self, rgb_image: np.ndarray):
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_image)
         return self.landmarker.detect(mp_image)
 
-    def extract_from_gif(self, gif_path: str) -> pd.DataFrame:
+    def extract_from_image(self, image_path: str, image_index: int = 0) -> list[dict]:
+        rgb_image = self.load_image(image_path)
+        result = self.detect_on_image(rgb_image)
         rows: list[dict] = []
-        frames = self.load_gif_frames(gif_path)
 
-        for frame_idx, rgb_frame in enumerate(frames):
-            result = self.detect_on_frame(rgb_frame)
+        if not result.pose_landmarks:
+            return rows
 
-            if not result.pose_landmarks:
-                continue
+        image_landmarks = result.pose_landmarks[0]
+        world_landmarks = result.pose_world_landmarks[0]
+        image_name = Path(image_path).name
 
-            image_landmarks = result.pose_landmarks[0]
-            world_landmarks = result.pose_world_landmarks[0]
+        for landmark_index, (img_lm, world_lm) in enumerate(zip(image_landmarks, world_landmarks)):
+            rows.append(
+                {
+                    "image_index": image_index,
+                    "image_name": image_name,
+                    "landmark_index": landmark_index,
+                    "x": float(img_lm.x),
+                    "y": float(img_lm.y),
+                    "z": float(img_lm.z),
+                    "visibility": float(img_lm.visibility),
+                    "world_x": float(world_lm.x),
+                    "world_y": float(world_lm.y),
+                    "world_z": float(world_lm.z),
+                }
+            )
 
-            for lm_idx, (img_lm, world_lm) in enumerate(zip(image_landmarks, world_landmarks)):
-                rows.append(
-                    {
-                        "frame_index": frame_idx,
-                        "landmark_index": lm_idx,
-                        "x": float(img_lm.x),
-                        "y": float(img_lm.y),
-                        "z": float(img_lm.z),
-                        "visibility": float(img_lm.visibility),
-                        "world_x": float(world_lm.x),
-                        "world_y": float(world_lm.y),
-                        "world_z": float(world_lm.z),
-                    }
-                )
+        return rows
+
+    def extract_from_images(self, image_paths: Iterable[str]) -> pd.DataFrame:
+        rows: list[dict] = []
+
+        for image_index, image_path in enumerate(image_paths):
+            rows.extend(self.extract_from_image(image_path, image_index=image_index))
 
         return pd.DataFrame(rows)
 
-    def draw_landmarks(self, rgb_frame: np.ndarray, detection_result) -> np.ndarray:
-        annotated = rgb_frame.copy()
+    def draw_landmarks(self, rgb_image: np.ndarray, detection_result) -> np.ndarray:
+        annotated = rgb_image.copy()
 
         if not detection_result.pose_landmarks:
             return cv2.cvtColor(annotated, cv2.COLOR_RGB2BGR)
@@ -107,13 +92,13 @@ class PoseExtractor:
 
         return cv2.cvtColor(annotated, cv2.COLOR_RGB2BGR)
 
-    def export_preview_frames(self, gif_path: str, out_dir: str, max_frames: int = 10) -> None:
+    def export_preview_images(self, image_paths: Iterable[str], out_dir: str) -> None:
         out_path = Path(out_dir)
         out_path.mkdir(parents=True, exist_ok=True)
 
-        frames = self.load_gif_frames(gif_path)
-
-        for idx, rgb_frame in enumerate(frames[:max_frames]):
-            result = self.detect_on_frame(rgb_frame)
-            preview = self.draw_landmarks(rgb_frame, result)
-            cv2.imwrite(str(out_path / f"frame_{idx:04d}.png"), preview)
+        for image_path in image_paths:
+            rgb_image = self.load_image(image_path)
+            result = self.detect_on_image(rgb_image)
+            preview = self.draw_landmarks(rgb_image, result)
+            stem = Path(image_path).stem
+            cv2.imwrite(str(out_path / f"{stem}_preview.png"), preview)
